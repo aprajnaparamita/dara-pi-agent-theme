@@ -1,0 +1,38 @@
+{
+  "name": "pi-thinking-gifs-extension",
+  "version": "2.0.0",
+  "description": "Display animated GIF visualizations while the pi agent is thinking",
+  "main": "index.ts",
+  "keywords": [
+    "pi-coding-agent",
+    "pi-extension",
+    "visualization",
+    "gif",
+    "thinking",
+    "animation"
+  ],
+  "author": "Dara",
+  "license": "MIT",
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "../test.sh"
+  },
+  "systemDependencies": {
+    "chafa": {
+      "description": "Terminal graphics library for rendering images",
+      "install": "brew install chafa",
+      "version": ">=1.18.0"
+    }
+  }
+}
