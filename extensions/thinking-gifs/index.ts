@@ -4,7 +4,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 export default function (pi: ExtensionAPI) {
-  let isThinking = false;
+  let isShowingGif = false;
   let animationProcess: ChildProcess | null = null;
   let currentTui: any = null;
 
@@ -16,85 +16,95 @@ export default function (pi: ExtensionAPI) {
       const gifsDir = join(process.cwd(), "gifs");
       const files = await readdir(gifsDir);
       const gifFiles = files.filter((f) => f.toLowerCase().endsWith(".gif"));
-
-      if (gifFiles.length === 0) {
-        return null;
-      }
-
+      if (gifFiles.length === 0) return null;
       const randomIndex = Math.floor(Math.random() * gifFiles.length);
       return join(gifsDir, gifFiles[randomIndex]);
     } catch (error) {
-      console.error("Error reading gifs directory:", error);
       return null;
     }
   }
 
   /**
-   * Start displaying an animated GIF (takes over terminal)
+   * Walk the TUI's child tree and stop any Loader intervals before restarting.
+   * The Loader (⠏ Working...) lives inside statusContainer as a direct grandchild of TUI.
+   * Stopping its setInterval prevents it from rendering after tui.start().
+   */
+  function stopLoadersInTui(tui: any) {
+    for (const child of tui.children ?? []) {
+      for (const grandchild of child.children ?? []) {
+        if (typeof grandchild.stop === "function" && grandchild.intervalId != null) {
+          grandchild.stop();
+        }
+      }
+      if (typeof child.stop === "function" && child.intervalId != null) {
+        child.stop();
+      }
+    }
+  }
+
+  /**
+   * Start displaying an animated GIF (takes over terminal).
+   * Resolves only after tui.stop() has been called synchronously inside the factory,
+   * so before_agent_start completes before pi can render the spinner.
    */
   async function startAnimatedGif(ctx: any) {
-    if (!ctx.hasUI) {
-      return;
-    }
+    if (!ctx.hasUI || isShowingGif) return;
 
     const gifPath = await getRandomGif();
-    if (!gifPath) {
-      ctx.ui.notify("No GIF files found in gifs/ directory", "error");
-      return;
-    }
+    if (!gifPath) return;
 
-    try {
-      // Use custom() to get TUI access, then hand over terminal
-      await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
-        // Stop TUI to release terminal
+    isShowingGif = true;
+
+    await new Promise<void>((resolve) => {
+      ctx.ui.custom<void>((tui: any, _theme: any, _kb: any, done: any) => {
         tui.stop();
         currentTui = { tui, done };
 
-        // Clear screen and show message
         process.stdout.write("\x1b[2J\x1b[H");
         process.stdout.write("🦄 Agent is thinking...\n\n");
 
-        // Spawn chafa with animation (background process)
         const shell = process.env.SHELL || "/bin/sh";
-        // const command = `chafa --animate=on --stretch --symbols block --color-space rgb --dither none "${gifPath}"`;
-        const command = `chafa --animate --size=$(tput cols)x$(tput lines) --stretch --symbols block --colors 16 --color-space rgb --dither none --ansi --clear your.gif "${gifPath}"`;
+
+        // NOTE: DO NOT CHANGE THE LINE BELOW WITHOUT USING THE SAME PARAMETERS
+        // preserve parameters to get the correct aspect ratio
+        const command = `chafa --animate=on --size=$(( $(tput cols) * 2 ))x$(( $(tput lines) * 2 )) --stretch --symbols block --colors 256 --color-space rgb --dither none --clear "${gifPath}"`;
 
         animationProcess = spawn(shell, ["-c", command], {
           stdio: "inherit",
           env: process.env,
         });
 
-        // Handle process exit (in case it exits on its own)
         animationProcess.on("exit", () => {
           if (animationProcess) {
             stopAnimatedGif();
           }
         });
 
-        // Return a minimal component (won't be rendered since TUI is stopped)
-        return { 
-          render: () => [], 
-          invalidate: () => {} 
-        };
+        // Resolve now — tui.stop() is done, before_agent_start can return
+        resolve();
+
+        return { render: () => [], invalidate: () => {} };
       });
-    } catch (error) {
-      console.error("Error starting animated GIF:", error);
-    }
+    });
   }
 
   /**
-   * Stop the animated GIF and return to TUI
+   * Stop the animated GIF and return control to the TUI.
    */
   function stopAnimatedGif() {
-    // Kill the animation process
+    if (!isShowingGif) return;
+    isShowingGif = false;
+
     if (animationProcess) {
       animationProcess.kill("SIGTERM");
       animationProcess = null;
     }
 
-    // Restart TUI if we have a reference
     if (currentTui) {
       const { tui, done } = currentTui;
+      // Kill the Loader's setInterval before restarting TUI so the spinner
+      // doesn't flash onto the screen during handover
+      stopLoadersInTui(tui);
       tui.start();
       tui.requestRender(true);
       done();
@@ -102,41 +112,42 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // Listen for when the agent starts thinking (streaming)
-  pi.on("message_update", async (event, ctx) => {
-    // Only show GIF for assistant messages (first update triggers display)
-    if (event.message.role === "assistant" && !isThinking) {
-      isThinking = true;
-      await startAnimatedGif(ctx);
-    }
+  // ─── Start GIF before pi creates the ⠏ Working... spinner ───
+  pi.on("before_agent_start", async (_event, ctx) => {
+    await startAnimatedGif(ctx);
   });
 
-  // Listen for when the agent finishes
-  pi.on("message_end", async (event, ctx) => {
-    if (event.message.role === "assistant" && isThinking) {
-      isThinking = false;
+  // ─── First token streaming in — stop GIF, let text appear ───
+  pi.on("message_update", async (event, _ctx) => {
+    if (event.message.role === "assistant") {
       stopAnimatedGif();
     }
   });
 
-  // Listen for when tools start executing
-  pi.on("tool_execution_start", async (event, ctx) => {
-    if (isThinking) {
-      isThinking = false;
-      stopAnimatedGif();
-    }
-  });
-
-  // Clean up on shutdown
-  pi.on("session_shutdown", async (_, ctx) => {
+  // ─── Tool about to run — stop GIF so chat is readable ───
+  pi.on("tool_execution_start", async (_event, _ctx) => {
     stopAnimatedGif();
   });
 
-  // Register manual test command
+  // ─── Tool done — model thinking again, show GIF ───
+  pi.on("tool_execution_end", async (_event, ctx) => {
+    await startAnimatedGif(ctx);
+  });
+
+  // ─── Agent fully done — stop GIF ───
+  pi.on("agent_end", async (_event, _ctx) => {
+    stopAnimatedGif();
+  });
+
+  // Clean up on shutdown
+  pi.on("session_shutdown", async (_) => {
+    stopAnimatedGif();
+  });
+
+  // Manual test command
   pi.registerCommand("thinking-gif", {
     description: "Display a random animated thinking GIF (press Ctrl+C to stop)",
     handler: async (args, ctx) => {
-      // No UI available (print mode, RPC, etc.)
       if (!ctx.hasUI) {
         ctx.ui.notify("This command requires TUI mode", "error");
         return;
@@ -148,35 +159,24 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Use ctx.ui.custom() to get TUI access, then hand over terminal
       await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
-        // Stop TUI to release terminal
         tui.stop();
 
-        // Clear screen
         process.stdout.write("\x1b[2J\x1b[H");
-
-        // Display header
         process.stdout.write("🦄 Thinking GIF - Press Ctrl+C to stop\n\n");
 
-        // Run chafa with full terminal access (with animation!)
-        // Note: 30 second timeout as safety measure
         const shell = process.env.SHELL || "/bin/sh";
-        const command = `chafa --animate=on --duration=30 --stretch --symbols block --color-space rgb --dither none "${gifPath}"`;
-        
-        const result = spawnSync(shell, ["-c", command], {
-          stdio: "inherit",  // Hand terminal over to chafa
+        const command = `chafa --animate=on --duration=30 --stretch --color-space rgb "${gifPath}"`;
+
+        spawnSync(shell, ["-c", command], {
+          stdio: "inherit",
           env: process.env,
         });
 
-        // Restart TUI
         tui.start();
         tui.requestRender(true);
-
-        // Signal completion
         done();
 
-        // Return empty component (immediately disposed since done() was called)
         return { render: () => [], invalidate: () => {} };
       });
     },
