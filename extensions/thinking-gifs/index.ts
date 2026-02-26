@@ -60,16 +60,14 @@ export default function (pi: ExtensionAPI) {
         tui.stop();
         currentTui = { tui, done };
 
-        process.stdout.write("\x1b[2J\x1b[H");
-
         const shell = process.env.SHELL || "/bin/sh";
 
-        // Print the message as part of the shell script so chafa renders below it.
-        // We reserve 2 rows at the top (message + blank line) by subtracting from LINES.
-        // --clear is intentionally omitted so chafa doesn't wipe the message on each frame.
+        // Clear screen, print message pinned to row 1, move cursor to row 3,
+        // then run chafa from there. Chafa animates by moving cursor up N lines
+        // and redrawing — since it starts at row 3 it won't touch rows 1-2.
         const command = `
-          printf "\\033[1;35m🦄 Agent is thinking...\\033[0m\\n\\n"
-          chafa --animate=on --size=$(tput cols)x$(( $(tput lines) - 2 )) --stretch --symbols block --colors 256 --color-space rgb --dither none "${gifPath}"
+          printf "\\033[2J\\033[H\\033[1;35m🦄 Agent is thinking...\\033[0m\\n\\n"
+          chafa --animate=on --size=$(( $(tput cols) ))x$(( ( $(tput lines) - 2 ) )) --stretch --symbols block --colors 16 --color-space rgb --dither none "${gifPath}"
         `;
 
         animationProcess = spawn(shell, ["-c", command], {
@@ -182,6 +180,53 @@ export default function (pi: ExtensionAPI) {
 
         return { render: () => [], invalidate: () => {} };
       });
+    },
+  });
+
+  // Context usage command
+  pi.registerCommand("context", {
+    description: "Display current context usage with visual graph",
+    handler: async (args, ctx) => {
+      const usage = ctx.getContextUsage();
+      
+      if (!usage) {
+        ctx.ui.notify("No context usage data available", "warning");
+        return;
+      }
+
+      const { tokens, contextWindow } = usage;
+      const percentage = (tokens / contextWindow) * 100;
+      const barWidth = 50;
+      const filledWidth = Math.round((percentage / 100) * barWidth);
+      
+      // Create visual bar
+      const filled = "█".repeat(filledWidth);
+      const empty = "░".repeat(barWidth - filledWidth);
+      const bar = filled + empty;
+      
+      // Determine color based on usage
+      let color = "success";
+      if (percentage > 80) color = "error";
+      else if (percentage > 60) color = "warning";
+      
+      // Format numbers with commas
+      const formatNumber = (num: number) => num.toLocaleString();
+      
+      const lines = [
+        "═══════════════════════════════════════════════════════════",
+        "                   CONTEXT USAGE",
+        "═══════════════════════════════════════════════════════════",
+        "",
+        `  Tokens Used:     ${formatNumber(tokens)} / ${formatNumber(contextWindow)}`,
+        `  Percentage:      ${percentage.toFixed(1)}%`,
+        "",
+        `  ${bar}`,
+        "",
+        "═══════════════════════════════════════════════════════════",
+      ];
+      
+      // Display using notify
+      ctx.ui.notify(lines.join("\n"), color);
     },
   });
 }
