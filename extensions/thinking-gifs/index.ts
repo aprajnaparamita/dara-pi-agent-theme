@@ -61,13 +61,16 @@ export default function (pi: ExtensionAPI) {
         currentTui = { tui, done };
 
         process.stdout.write("\x1b[2J\x1b[H");
-        process.stdout.write("🦄 Agent is thinking...\n\n");
 
         const shell = process.env.SHELL || "/bin/sh";
 
-        // NOTE: DO NOT CHANGE THE LINE BELOW WITHOUT USING THE SAME PARAMETERS
-        // preserve parameters to get the correct aspect ratio
-        const command = `chafa --animate=on --size=$(( $(tput cols) * 2 ))x$(( $(tput lines) * 2 )) --stretch --symbols block --colors 256 --color-space rgb --dither none --clear "${gifPath}"`;
+        // Print the message as part of the shell script so chafa renders below it.
+        // We reserve 2 rows at the top (message + blank line) by subtracting from LINES.
+        // --clear is intentionally omitted so chafa doesn't wipe the message on each frame.
+        const command = `
+          printf "\\033[1;35m🦄 Agent is thinking...\\033[0m\\n\\n"
+          chafa --animate=on --size=$(tput cols)x$(( $(tput lines) - 2 )) --stretch --symbols block --colors 256 --color-space rgb --dither none "${gifPath}"
+        `;
 
         animationProcess = spawn(shell, ["-c", command], {
           stdio: "inherit",
