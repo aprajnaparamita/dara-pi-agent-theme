@@ -1,7 +1,11 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export default function (pi: ExtensionAPI) {
   let isShowingGif = false;
@@ -13,7 +17,7 @@ export default function (pi: ExtensionAPI) {
    */
   async function getRandomGif(): Promise<string | null> {
     try {
-      const gifsDir = join(process.cwd(), "gifs");
+      const gifsDir = join(__dirname, "gifs");
       const files = await readdir(gifsDir);
       const gifFiles = files.filter((f) => f.toLowerCase().endsWith(".gif"));
       if (gifFiles.length === 0) return null;
